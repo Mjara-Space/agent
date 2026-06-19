@@ -1020,8 +1020,29 @@ print(">>>" + frappe.session.sid + "<<<")
             # never keep the worker alive) and abort_event + the finally block
             # release them and remove the FIFOs no matter how we exit.
             abort_event = threading.Event()
+            # Set by the stall watchdog so the failure path can report a precise
+            # "stalled" cause instead of the misleading in-container SIGPIPE.
+            stalled = threading.Event()
             rclone_results = {}
+            # rclone upload subprocesses keyed by file, so the watchdog can read
+            # each one's /proc/<pid>/io counters and kill them on a stall.
+            rclone_procs = {}
             threads = []
+            # Assigned once the reader threads are up; the finally block joins it.
+            watchdog_thread = None
+
+            def terminate_in_container_backup():
+                # The streaming pipeline (`bench backup` -> mariadb-dump | gzip ->
+                # FIFO) runs inside the container via `docker exec`, and those
+                # processes do NOT die when the host-side docker exec client dies.
+                # So any abort - a failure mid-stream or the normal finally - must
+                # kill them explicitly or they orphan and wedge forever (observed:
+                # a stalled stream left mariadb-dump blocked in pipe_write for
+                # 2.5h). todays_dt is unique to this backup and appears in every
+                # one of their cmdlines, so it targets only them.
+                with contextlib.suppress(Exception):
+                    self.bench.docker_execute(f"pkill -f {todays_dt}", non_zero_throw=False)
+
             try:
                 # Frappe creates private/backups at site creation, but the
                 # streaming path is the only one that writes here before
@@ -1034,10 +1055,18 @@ print(">>>" + frappe.session.sid + "<<<")
 
                 for file in files_to_stream:
                     def start_rclone(fifo_path=fifo_paths[file], file=file, chunk_size=chunk_sizes[file]):
+                        # Pre-record a failure sentinel: if this thread crashes
+                        # before recording a result (rclone binary missing, or
+                        # open()/Popen() raising), the backup's SIGPIPE handler
+                        # still has something concrete to surface instead of the
+                        # opaque in-container traceback. Overwritten on success.
+                        rclone_results[file] = (None, "rclone reader thread crashed or never started")
                         fd = open(fifo_path, "rb")
                         if abort_event.is_set():
                             # Released by the finally block after a failure; don't
                             # start an upload that would only push partial data.
+                            # Not a failure - drop the sentinel so it isn't reported.
+                            rclone_results.pop(file, None)
                             fd.close()
                             return
                         subproc = subprocess.Popen(
@@ -1081,6 +1110,7 @@ print(">>>" + frappe.session.sid + "<<<")
                             close_fds=True,
                             env=s3_env,
                         )
+                        rclone_procs[file] = subproc
                         fd.close()
                         # communicate() drains stderr while waiting, so rclone
                         # can't deadlock filling the stderr pipe buffer.
@@ -1091,6 +1121,60 @@ print(">>>" + frappe.session.sid + "<<<")
                     t = threading.Thread(target=start_rclone, daemon=True)
                     threads.append(t)
                     t.start()
+
+                # Bound the whole streaming operation against a stall. rclone's
+                # own --contimeout/--timeout don't cover a stall while backup() is
+                # still writing, and there are two distinct hang modes:
+                #   1. S3 stops draining a FIFO mid-stream -> backpressure wedges
+                #      gzip -> mariadb-dump, and `bench backup` blocks forever.
+                #   2. For encrypted backups, Frappe runs `gpg -c <db>` AFTER the
+                #      dump, which reopens the (now writer-less) FIFO and blocks -
+                #      rclone has already finished, so watching rclone alone misses
+                #      it. backup() hangs until the worker is restarted.
+                # The watchdog tracks cumulative bytes each rclone moved
+                # (/proc/<pid>/io rchar+wchar, kept monotonic across procs that
+                # exit) and tears the backup down if NOTHING moves for
+                # STREAM_STALL_TIMEOUT - covering both modes - so the job fails in
+                # minutes instead of hanging and piling up across scheduled runs.
+                STREAM_STALL_TIMEOUT = 5 * 60
+                WATCHDOG_POLL = 15
+
+                def watchdog():
+                    proc_bytes = {}  # file -> last-known rchar+wchar (monotonic)
+                    last_total = 0
+                    last_progress_at = time.monotonic()
+                    while not abort_event.wait(WATCHDOG_POLL):
+                        for f, sp in list(rclone_procs.items()):
+                            try:
+                                with open(f"/proc/{sp.pid}/io") as io:
+                                    # rchar = bytes read from the FIFO, wchar =
+                                    # bytes written to S3; their sum climbs through
+                                    # both phases of rclone's read/upload cycle, so
+                                    # a slow-but-progressing link never looks stalled.
+                                    proc_bytes[f] = sum(
+                                        int(line.split()[1])
+                                        for line in io
+                                        if line.startswith(("rchar:", "wchar:"))
+                                    )
+                            except (OSError, ValueError):
+                                # proc exited (keep its last-known bytes so the
+                                # total stays monotonic) or /proc absent on a
+                                # non-Linux dev host (watchdog simply never fires).
+                                pass
+                        total = sum(proc_bytes.values())
+                        if total > last_total:
+                            last_total = total
+                            last_progress_at = time.monotonic()
+                        elif time.monotonic() - last_progress_at >= STREAM_STALL_TIMEOUT:
+                            stalled.set()
+                            for sp in list(rclone_procs.values()):
+                                with contextlib.suppress(Exception):
+                                    sp.kill()
+                            terminate_in_container_backup()
+                            return
+
+                watchdog_thread = threading.Thread(target=watchdog, daemon=True)
+                watchdog_thread.start()
 
                 time.sleep(3)
                 try:
@@ -1111,17 +1195,48 @@ print(">>>" + frappe.session.sid + "<<<")
                     # the real cause instead of the misleading SIGPIPE traceback.
                     for t in threads:
                         t.join(timeout=5)
-                    killed = {
-                        file: {"exit": ret, "error": err}
-                        for file, (ret, err) in rclone_results.items()
-                        if ret < 0
-                    }
-                    if killed:
+                    if stalled.is_set():
+                        # The watchdog tore the backup down because no bytes moved
+                        # for STREAM_STALL_TIMEOUT - an S3 stall mid-stream or a
+                        # post-dump hang (e.g. gpg encryption reopening the FIFO).
                         raise AgentException(
                             {
                                 "traceback": (
-                                    "Streaming backup failed: rclone upload process(es) were "
-                                    f"killed by a signal mid-stream (likely OOM). Killed: {killed}"
+                                    "Streaming backup aborted: no data moved through the "
+                                    f"upload stream(s) for {STREAM_STALL_TIMEOUT // 60} min "
+                                    "(S3 stalled, or backup() hung after the dump - e.g. gpg "
+                                    "encryption reopening the FIFO). Killed the backup so the "
+                                    f"worker slot isn't wedged. rclone results: {rclone_results}"
+                                )
+                            }
+                        )
+                    # Any rclone that didn't exit 0 is the real cause of the
+                    # SIGPIPE: ret < 0 = killed by a signal (commonly OOM/earlyoom),
+                    # ret > 0 = rclone errored on its own (S3 auth/bucket/endpoint/
+                    # network), ret is None = the reader thread crashed before
+                    # recording. Surface rclone's captured stderr either way - it
+                    # carries the actual error the SIGPIPE traceback hides.
+                    failed = {
+                        file: {"exit": ret, "error": err}
+                        for file, (ret, err) in rclone_results.items()
+                        if ret != 0
+                    }
+                    if failed:
+                        signal_killed = any(
+                            isinstance(d["exit"], int) and d["exit"] < 0
+                            for d in failed.values()
+                        )
+                        hint = (
+                            " (negative exit = killed by a signal, likely OOM/earlyoom)"
+                            if signal_killed
+                            else ""
+                        )
+                        raise AgentException(
+                            {
+                                "traceback": (
+                                    "Streaming backup failed: rclone upload(s) did not complete "
+                                    f"cleanly{hint}; the in-container dump then died with SIGPIPE. "
+                                    f"Per-file rclone exit code / stderr: {failed}"
                                 )
                             }
                         )
@@ -1147,6 +1262,12 @@ print(">>>" + frappe.session.sid + "<<<")
                 # unblocks and then sees abort_event), and always remove the
                 # FIFOs - even if the backup failed before they were written.
                 abort_event.set()
+                # Stop the watchdog and guarantee the in-container pipeline is
+                # gone - orphans don't die with the docker exec client, so a
+                # failure on any path would otherwise leave them wedged forever.
+                if watchdog_thread:
+                    watchdog_thread.join(timeout=5)
+                terminate_in_container_backup()
                 for path in fifo_paths.values():
                     with contextlib.suppress(OSError):
                         os.close(os.open(path, os.O_RDWR | os.O_NONBLOCK))
