@@ -904,6 +904,31 @@ print(">>>" + frappe.session.sid + "<<<")
         except Exception:
             return self.previous_tables
 
+    @property
+    def backup_encryption_enabled(self):
+        # Frappe encrypts backups with a post-dump `gpg -c <file>` pass (which
+        # reopens each dump path) ONLY when the System Settings "encrypt_backup"
+        # checkbox is on. That pass is fundamentally incompatible with FIFO
+        # streaming - a FIFO is drained once, so rclone consumes the plaintext
+        # during the dump and gpg then blocks reopening a writer-less FIFO. The
+        # setting lives in the site DB (tabSingles), not site_config (the key is
+        # auto-generated into config only on the first encrypted backup), so we
+        # read it the same way as `timezone`. On any failure assume it MAY be on:
+        # skipping streaming yields a slower-but-correct encrypted backup, whereas
+        # streaming an encrypted site would upload plaintext.
+        query = (
+            f"select value from {self.database}.tabSingles where "
+            "doctype = 'System Settings' and field = 'encrypt_backup'"
+        )
+        try:
+            value = self.execute(
+                f"{db_client_cli()} -h {self.host} -P {self.db_port} -u{self.database} -p{self.password} "
+                f'--connect-timeout 3 -sN -e "{query}"'
+            )["output"].strip()
+        except Exception:
+            return True
+        return value == "1"
+
     @job("Backup Site", priority="low")
     def backup_job(
         self,
@@ -912,11 +937,20 @@ print(">>>" + frappe.session.sid + "<<<")
         keep_files_locally_after_offsite_backup: bool = False,
         stream: bool = False,
     ):
+        # Streaming pipes the dump through a FIFO straight to S3, but it can't
+        # carry an ENCRYPTED backup: Frappe encrypts in a post-dump `gpg -c` pass
+        # that reopens the (now drained, writer-less) FIFO and blocks forever -
+        # and rclone would have uploaded plaintext anyway. Inline encryption is
+        # framework behaviour we can't impose per-site, so route encrypted sites
+        # to the dump-to-disk + offsite-upload path, which produces a correct
+        # encrypted (`-enc`) offsite backup.
+        encrypted = self.backup_encryption_enabled
+
         # Stream straight to S3 only when explicitly requested and a local copy
         # isn't needed (streaming writes no files to disk). Every other case -
-        # local-only, offsite without streaming, or keep-locally - backs up to
-        # disk first and uploads offsite afterwards if required.
-        if not (offsite and stream) or keep_files_locally_after_offsite_backup:
+        # local-only, offsite without streaming, keep-locally, or encrypted -
+        # backs up to disk first and uploads offsite afterwards if required.
+        if not (offsite and stream) or keep_files_locally_after_offsite_backup or encrypted:
             backup_files = self.backup(with_files)
             uploaded_files = (
                 self.upload_offsite_backup(backup_files, offsite, keep_files_locally_after_offsite_backup)
