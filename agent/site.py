@@ -1218,7 +1218,6 @@ print(">>>" + frappe.session.sid + "<<<")
                 watchdog_thread = threading.Thread(target=watchdog, daemon=True)
                 watchdog_thread.start()
 
-                time.sleep(3)
                 try:
                     self.backup(
                         with_files,
