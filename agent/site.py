@@ -569,10 +569,23 @@ class Site(Base):
             docker_so_path = os.path.join(docker_backup_dir, so_filename)
             host_so_path = os.path.join(host_backup_dir, so_filename)
             self.build_bypass_unlink_shim(host_so_path)
+            # Frappe writes the DB backup in TWO sessions on backup_path_db: a gzip
+            # metadata header it then CLOSES, then `mariadb-dump | gzip >>`. On a
+            # FIFO the header close drops the writer count to 0, so the O_RDONLY
+            # reader (rclone) hits a premature EOF and finalizes after just the
+            # header - leaving the real dump with no reader (SIGPIPE or hang). Hold
+            # one extra persistent writer (fd 3) on the DB FIFO for the whole
+            # backup so the writer count never reaches 0 mid-stream; releasing it
+            # afterwards gives rclone a single clean EOF spanning header+dump. fd 3
+            # writes nothing, so it adds no bytes. Only the DB needs this - the
+            # config and tar artifacts are each written in a single session.
+            inner = (
+                f"env LD_PRELOAD={docker_so_path} bench --site {self.name} backup "
+                f"{with_files_flag} {conf_arg} {files_arg} {private_files_arg} {db_arg} --verbose"
+            )
+            holder = f'exec 3> "{backup_path_db}"; {inner}; rc=$?; exec 3>&-; exit $rc'
             try:
-                self.bench.docker_execute(
-                    f"env LD_PRELOAD={docker_so_path} bench --site {self.name} backup {with_files_flag} {conf_arg} {files_arg} {private_files_arg} {db_arg} --verbose"
-                )
+                self.bench.docker_execute(f"bash -c '{holder}'")
             finally:
                 # Always remove the shim, even if the backup command fails,
                 # so it doesn't leak into the site's backups directory.
