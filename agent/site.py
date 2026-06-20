@@ -1019,8 +1019,11 @@ print(">>>" + frappe.session.sid + "<<<")
 
             # The local FIFO names must keep the "%stream%" marker so the
             # bypass_unlink.so LD_PRELOAD shim blocks the framework from deleting
-            # them mid-stream. Strip the marker only for the S3 object key.
-            s3_names = {file: file.replace("%stream%-", "") for file in files_to_stream}
+            # them mid-stream. For the S3 object key, swap the sentinel for a plain
+            # "stream" label so streamed backups stay identifiable (vs the on-disk
+            # convention) while dropping the "%" chars, which are unsafe in S3 keys
+            # and URLs. e.g. 20260619_113025-stream-database.sql.gz
+            s3_names = {file: file.replace("%stream%-", "stream-") for file in files_to_stream}
 
             # Pick each object's S3 chunk size up front so a too-large artifact
             # fails here - before any FIFO/backup work - with a clear message
