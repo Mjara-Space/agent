@@ -1065,6 +1065,10 @@ print(">>>" + frappe.session.sid + "<<<")
             # each one's /proc/<pid>/io counters and kill them on a stall.
             rclone_procs = {}
             threads = []
+            # Reader thread per file, so the failure path can tell a thread that
+            # genuinely crashed from one merely still blocked in open() (the
+            # backup died before writing that FIFO).
+            reader_threads = {}
             # Assigned once the reader threads are up; the finally block joins it.
             watchdog_thread = None
 
@@ -1157,6 +1161,7 @@ print(">>>" + frappe.session.sid + "<<<")
 
                     t = threading.Thread(target=start_rclone, daemon=True)
                     threads.append(t)
+                    reader_threads[file] = t
                     t.start()
 
                 # Bound the whole streaming operation against a stall. rclone's
@@ -1247,21 +1252,32 @@ print(">>>" + frappe.session.sid + "<<<")
                                 )
                             }
                         )
-                    # Any rclone that didn't exit 0 is the real cause of the
-                    # SIGPIPE: ret < 0 = killed by a signal (commonly OOM/earlyoom),
-                    # ret > 0 = rclone errored on its own (S3 auth/bucket/endpoint/
-                    # network), ret is None = the reader thread crashed before
-                    # recording. Surface rclone's captured stderr either way - it
-                    # carries the actual error the SIGPIPE traceback hides.
-                    failed = {
-                        file: {"exit": ret, "error": err}
-                        for file, (ret, err) in rclone_results.items()
-                        if ret != 0
-                    }
-                    if failed:
+                    # Classify each reader to find whether rclone actually caused
+                    # the failure, vs the backup dying for its own reason:
+                    #   ret == 0        -> uploaded cleanly, ignore.
+                    #   ret int and !=0 -> rclone errored (ret<0 = signal/OOM,
+                    #                      ret>0 = S3 auth/bucket/endpoint/network).
+                    #                      This is a real cause of the SIGPIPE.
+                    #   ret is None     -> thread never recorded a result. If the
+                    #                      thread is DEAD it crashed (real cause);
+                    #                      if still ALIVE it's merely blocked in
+                    #                      open() because the backup never wrote
+                    #                      that FIFO - a symptom, NOT the cause, so
+                    #                      it must not mask the real backup error.
+                    rclone_failures = {}
+                    for file, (ret, err) in rclone_results.items():
+                        if ret == 0:
+                            continue
+                        if ret is None:
+                            t = reader_threads.get(file)
+                            if t is not None and t.is_alive():
+                                continue  # blocked reader; backup died first
+                            err = "rclone reader thread crashed before starting the upload"
+                        rclone_failures[file] = {"exit": ret, "error": err}
+                    if rclone_failures:
                         signal_killed = any(
                             isinstance(d["exit"], int) and d["exit"] < 0
-                            for d in failed.values()
+                            for d in rclone_failures.values()
                         )
                         hint = (
                             " (negative exit = killed by a signal, likely OOM/earlyoom)"
@@ -1273,10 +1289,14 @@ print(">>>" + frappe.session.sid + "<<<")
                                 "traceback": (
                                     "Streaming backup failed: rclone upload(s) did not complete "
                                     f"cleanly{hint}; the in-container dump then died with SIGPIPE. "
-                                    f"Per-file rclone exit code / stderr: {failed}"
+                                    f"Per-file rclone exit code / stderr: {rclone_failures}"
                                 )
                             }
                         )
+                    # No genuine rclone failure - the backup failed on its own
+                    # (and any None readers were just blocked waiting for it).
+                    # Re-raise the original AgentException, which carries the real
+                    # in-container traceback.
                     raise
 
                 result = self.finalize_streamed_offsite_backup(
