@@ -590,12 +590,18 @@ class Bench(Base):
     @step("Rebuild Bench Assets")
     def rebuild(self, apps: list[str] | None = None, is_inplace: bool = False):
         if not apps:
-            return self.docker_execute("bench build")
+            result = self.docker_execute("bench build")
+            self.sync_generated_assets()
+            return result
 
         if len(apps) == 1 and not is_inplace:
-            return self.docker_execute(f"bench build --app {apps[0]}")
+            result = self.docker_execute(f"bench build --app {apps[0]}")
+            self.sync_generated_assets()
+            return result
 
-        return self.docker_execute(f"bench build --apps {','.join(apps)}")
+        result = self.docker_execute(f"bench build --apps {','.join(apps)}")
+        self.sync_generated_assets()
+        return result
 
     def sync_generated_assets(self):
         synced = []

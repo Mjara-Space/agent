@@ -136,6 +136,35 @@ index_html_path = "drive/www/drive.html"
             ["drive", "frappe"],
         )
 
+    def test_rebuild_syncs_generated_assets_after_successful_build(self):
+        with (
+            patch.object(
+                self.bench,
+                "docker_execute",
+                return_value={"returncode": 0, "status": "Success", "output": ""},
+            ) as docker_execute,
+            patch.object(self.bench, "sync_generated_assets", return_value={"ok": True}) as sync_assets,
+        ):
+            result = self.bench.rebuild(apps=["drive"])
+
+        self.assertEqual(result["status"], "Success")
+        docker_execute.assert_called_once_with("bench build --app drive")
+        sync_assets.assert_called_once_with()
+
+    def test_rebuild_does_not_sync_generated_assets_after_failed_build(self):
+        with (
+            patch.object(
+                self.bench,
+                "docker_execute",
+                side_effect=AgentException({"ok": False, "message": "build failed"}),
+            ),
+            patch.object(self.bench, "sync_generated_assets") as sync_assets,
+            self.assertRaises(AgentException),
+        ):
+            self.bench.rebuild(apps=["drive"])
+
+        sync_assets.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
