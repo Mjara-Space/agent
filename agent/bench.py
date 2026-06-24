@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, TypedDict
 from urllib.parse import urlparse
 
 import requests
+import tomli
 
 from agent.app import App
 from agent.base import AgentException, Base
@@ -594,6 +595,115 @@ class Bench(Base):
             return self.docker_execute(f"bench build --app {apps[0]}")
 
         return self.docker_execute(f"bench build --apps {','.join(apps)}")
+
+    def sync_generated_assets(self):
+        synced = []
+        skipped = []
+        missing_assets = []
+
+        for app in sorted(self.apps):
+            result = self.sync_generated_app_assets(app)
+            if result["skipped"]:
+                skipped.append({"app": app, "reason": result["reason"]})
+                continue
+
+            synced.append(app)
+            missing_assets.extend(result["missing_assets"])
+
+        if missing_assets:
+            raise AgentException(
+                {
+                    "ok": False,
+                    "message": "Missing generated app assets after sync",
+                    "missing_assets": missing_assets,
+                }
+            )
+
+        return {"ok": True, "synced": synced, "skipped": skipped}
+
+    def sync_generated_app_assets(self, app: str):
+        app_root = Path(self.directory) / "apps" / app
+        config = self.get_bench_assets_config(app_root)
+        if not config:
+            return {"skipped": True, "reason": "no_bench_assets_config", "missing_assets": []}
+
+        app_public_path = app_root / app / "public"
+        if app_public_path.exists():
+            self.copy_app_public_assets(app, app_public_path)
+
+        index_html_path = self.resolve_bench_asset_path(app_root, config, "index_html_path")
+        asset_references = self.get_asset_references(app, index_html_path) if index_html_path else []
+        missing_assets = self.find_missing_assets(app, asset_references)
+
+        return {
+            "skipped": False,
+            "reason": None,
+            "index_html_path": str(index_html_path) if index_html_path else None,
+            "missing_assets": missing_assets,
+        }
+
+    def get_bench_assets_config(self, app_root: Path):
+        pyproject_path = app_root / "pyproject.toml"
+        if not pyproject_path.exists():
+            return {}
+
+        with pyproject_path.open("rb") as f:
+            pyproject = tomli.load(f)
+
+        return pyproject.get("tool", {}).get("bench", {}).get("assets", {})
+
+    def resolve_bench_asset_path(self, app_root: Path, config: dict, key: str) -> Path | None:
+        value = config.get(key)
+        if not value:
+            return None
+
+        build_dir = app_root / config.get("build_dir", ".")
+        candidates = [
+            (build_dir / value).resolve(),
+            (app_root / value).resolve(),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+
+        return candidates[0]
+
+    def copy_app_public_assets(self, app: str, app_public_path: Path):
+        assets_root = Path(self.sites_directory) / "assets"
+        assets_path = assets_root / app
+        assets_root_path = os.path.abspath(assets_root)
+        assets_path_path = os.path.abspath(assets_path)
+
+        if os.path.commonpath([assets_root_path, assets_path_path]) != assets_root_path:
+            raise AgentException({"ok": False, "message": f"Invalid app assets path for {app}"})
+
+        if assets_path.is_symlink() or assets_path.is_file():
+            assets_path.unlink()
+        elif assets_path.exists():
+            shutil.rmtree(assets_path)
+
+        assets_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(app_public_path, assets_path, symlinks=True)
+
+    def get_asset_references(self, app: str, index_html_path: Path):
+        if not index_html_path.exists():
+            return []
+
+        html = index_html_path.read_text()
+        pattern = re.compile(rf"/assets/{re.escape(app)}/[^\"'<>\s?#]+")
+        return sorted(set(pattern.findall(html)))
+
+    def find_missing_assets(self, app: str, asset_references: list[str]):
+        missing = []
+        assets_root = Path(self.sites_directory) / "assets"
+        prefix = f"/assets/{app}/"
+
+        for reference in asset_references:
+            relative_path = reference.removeprefix(prefix)
+            if not (assets_root / app / relative_path).exists():
+                missing.append(reference)
+
+        return missing
 
     @property
     def apps(self):

@@ -554,6 +554,12 @@ def rebuild_bench(bench):
     return {"job": job}
 
 
+@application.route("/benches/<string:bench>/sync-assets", methods=["POST"])
+@validate_bench
+def sync_bench_assets(bench):
+    return Server().benches[bench].sync_generated_assets()
+
+
 """
 POST /benches/bench-1/sites
 {
