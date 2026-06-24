@@ -48,6 +48,11 @@ index_html_path = "drive/www/drive.html"
         if include_public_asset:
             (app_public_assets / asset_name).write_text("console.log('drive')")
 
+    def _create_drive_public_asset_without_config(self):
+        app_public_assets = self.apps_dir / "drive" / "drive" / "public" / "frontend" / "assets"
+        app_public_assets.mkdir(parents=True)
+        (app_public_assets / "index-new.js").write_text("console.log('drive')")
+
     def test_sync_generated_app_assets_replaces_stale_assets(self):
         stale_assets = self.sites_assets_dir / "drive" / "frontend" / "assets"
         stale_assets.mkdir(parents=True)
@@ -75,6 +80,17 @@ index_html_path = "drive/www/drive.html"
 
         self.assertFalse(result["skipped"])
         self.assertFalse((self.sites_assets_dir / "drive").is_symlink())
+        self.assertTrue(
+            (self.sites_assets_dir / "drive" / "frontend" / "assets" / "index-new.js").exists()
+        )
+
+    def test_sync_generated_app_assets_copies_public_assets_without_config(self):
+        self._create_drive_public_asset_without_config()
+
+        result = self.bench.sync_generated_app_assets("drive")
+
+        self.assertFalse(result["skipped"])
+        self.assertEqual(result["missing_assets"], [])
         self.assertTrue(
             (self.sites_assets_dir / "drive" / "frontend" / "assets" / "index-new.js").exists()
         )

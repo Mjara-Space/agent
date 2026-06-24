@@ -627,13 +627,20 @@ class Bench(Base):
 
     def sync_generated_app_assets(self, app: str):
         app_root = Path(self.directory) / "apps" / app
-        config = self.get_bench_assets_config(app_root)
-        if not config:
-            return {"skipped": True, "reason": "no_bench_assets_config", "missing_assets": []}
-
         app_public_path = app_root / app / "public"
-        if app_public_path.exists():
-            self.copy_app_public_assets(app, app_public_path)
+        config = self.get_bench_assets_config(app_root)
+        if not app_public_path.exists():
+            return {"skipped": True, "reason": "no_public_assets", "missing_assets": []}
+
+        self.copy_app_public_assets(app, app_public_path)
+
+        if not config:
+            return {
+                "skipped": False,
+                "reason": None,
+                "index_html_path": None,
+                "missing_assets": [],
+            }
 
         index_html_path = self.resolve_bench_asset_path(app_root, config, "index_html_path")
         asset_references = self.get_asset_references(app, index_html_path) if index_html_path else []
