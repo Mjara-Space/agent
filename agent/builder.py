@@ -521,12 +521,13 @@ class ImageBuilder(Base, JobMixin):
         no_push: bool,
         registry: dict,
         platform: str,
-        build_token: str,
-        dockerfile: str,
-        clone_instructions: list[AppInfo],
-        group: str,
-        build_name: str,
-        deploy_candidate_params: dict,
+        filename: str | None = None,
+        build_token: str | None = None,
+        dockerfile: str | None = None,
+        clone_instructions: list[AppInfo] | None = None,
+        group: str | None = None,
+        build_name: str | None = None,
+        deploy_candidate_params: dict | None = None,
         ssh_keys: dict | None = None,
     ) -> None:
         super().__init__()
@@ -540,23 +541,37 @@ class ImageBuilder(Base, JobMixin):
         self.platform = platform
 
         self._job_context = JobContext()
+        self.filename = filename
+        self.filepath = (
+            os.path.join(get_image_build_context_directory(), filename) if filename else None
+        )
+        self.context_manager = None
+        self.validation_manager = None
+        self.build_directory = None
+        deploy_candidate_params = deploy_candidate_params or {}
 
-        self.context_manager = ContextManager(
-            clone_instructions=clone_instructions,
-            build_name=build_name,
-            group=group,
-            dockerfile=dockerfile,
-            deploy_candidate_params=deploy_candidate_params,
-            platform=platform,
-            ssh_keys=ssh_keys,
-            _job_context=self._job_context,
-        )
-        self.build_directory = self.context_manager.build_directory
-        self.validation_manager = ValidationManager(
-            _job_context=self._job_context,
-            dependencies=deploy_candidate_params.get("dependencies"),
-            clone_instructions=clone_instructions,
-        )
+        if not self.filepath:
+            if not all([dockerfile, clone_instructions, group, build_name]):
+                raise ValueError(
+                    "filename or dockerfile, clone_instructions, group and build_name are required"
+                )
+
+            self.context_manager = ContextManager(
+                clone_instructions=clone_instructions,
+                build_name=build_name,
+                group=group,
+                dockerfile=dockerfile,
+                deploy_candidate_params=deploy_candidate_params,
+                platform=platform,
+                ssh_keys=ssh_keys,
+                _job_context=self._job_context,
+            )
+            self.build_directory = self.context_manager.build_directory
+            self.validation_manager = ValidationManager(
+                _job_context=self._job_context,
+                dependencies=deploy_candidate_params.get("dependencies"),
+                clone_instructions=clone_instructions,
+            )
 
         self.no_cache = no_cache
         self.no_push = no_push
@@ -584,6 +599,15 @@ class ImageBuilder(Base, JobMixin):
 
     @job("Run Remote Builder")
     def run_remote_builder(self):
+        if self.filepath:
+            try:
+                return self._build_and_push(self.filepath)
+            finally:
+                self._cleanup_context(self.filepath)
+
+        if not self.context_manager or not self.validation_manager:
+            raise ValueError("Build context manager is not configured")
+
         self.context_manager.clone_repositories()
         self.context_manager.prepare_build_context()
         self.validation_manager.validate(
@@ -760,7 +784,7 @@ class ImageBuilder(Base, JobMixin):
 
     @step("Cleanup Context")
     def _cleanup_context(self, context_tar_filepath: str):
-        if os.path.exists(self.build_directory):
+        if self.build_directory and os.path.exists(self.build_directory):
             shutil.rmtree(self.build_directory, ignore_errors=True)
 
         if os.path.exists(context_tar_filepath):
@@ -929,6 +953,13 @@ def get_clone_directory():
 
 def get_builds_directory():
     path = os.path.join(os.getcwd(), ".docker-builds")
+    if not os.path.exists(path):
+        os.makedirs(path)
+    return path
+
+
+def get_image_build_context_directory():
+    path = os.path.join(os.getcwd(), ".image-build-contexts")
     if not os.path.exists(path):
         os.makedirs(path)
     return path
