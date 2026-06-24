@@ -601,7 +601,7 @@ class Bench(Base):
         skipped = []
         missing_assets = []
 
-        for app in sorted(self.apps):
+        for app in self.get_installed_app_names():
             result = self.sync_generated_app_assets(app)
             if result["skipped"]:
                 skipped.append({"app": app, "reason": result["reason"]})
@@ -620,6 +620,10 @@ class Bench(Base):
             )
 
         return {"ok": True, "synced": synced, "skipped": skipped}
+
+    def get_installed_app_names(self):
+        with open(self.apps_file, "r") as f:
+            return sorted(app.strip() for app in f if app.strip())
 
     def sync_generated_app_assets(self, app: str):
         app_root = Path(self.directory) / "apps" / app

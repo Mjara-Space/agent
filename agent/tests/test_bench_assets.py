@@ -4,7 +4,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import PropertyMock, patch
+from unittest.mock import patch
 
 from agent.base import AgentException
 from agent.bench import Bench
@@ -23,6 +23,7 @@ class TestBenchGeneratedAssets(unittest.TestCase):
         self.bench = object.__new__(Bench)
         self.bench.directory = str(self.bench_dir)
         self.bench.sites_directory = str(self.sites_dir)
+        self.bench.apps_file = str(self.sites_dir / "apps.txt")
 
     def tearDown(self):
         shutil.rmtree(self.test_dir)
@@ -86,19 +87,24 @@ index_html_path = "drive/www/drive.html"
         self.assertEqual(result["missing_assets"], ["/assets/drive/frontend/assets/missing.js"])
 
     def test_sync_generated_assets_raises_when_any_app_is_missing_assets(self):
-        with patch.object(Bench, "apps", new_callable=PropertyMock) as apps:
-            apps.return_value = {"drive": object()}
-            with patch.object(
-                self.bench,
-                "sync_generated_app_assets",
-                return_value={
-                    "skipped": False,
-                    "reason": None,
-                    "missing_assets": ["/assets/drive/frontend/assets/missing.js"],
-                },
-            ):
-                with self.assertRaises(AgentException):
-                    self.bench.sync_generated_assets()
+        (self.sites_dir / "apps.txt").write_text("frappe\ndrive\n")
+
+        with patch.object(
+            self.bench,
+            "sync_generated_app_assets",
+            return_value={
+                "skipped": False,
+                "reason": None,
+                "missing_assets": ["/assets/drive/frontend/assets/missing.js"],
+            },
+        ) as sync_app_assets:
+            with self.assertRaises(AgentException):
+                self.bench.sync_generated_assets()
+
+        self.assertEqual(
+            [call.args[0] for call in sync_app_assets.call_args_list],
+            ["drive", "frappe"],
+        )
 
 
 if __name__ == "__main__":
