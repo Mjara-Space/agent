@@ -105,6 +105,7 @@ index_html_path = "drive/www/drive.html"
 
         self.assertFalse(result["skipped"])
         docker_execute.assert_called_once()
+        self.assertIn("bash -lc", docker_execute.call_args.args[0])
         self.assertIn("apps/drive/drive/public", docker_execute.call_args.args[0])
         self.assertIn("sites/assets/drive", docker_execute.call_args.args[0])
 

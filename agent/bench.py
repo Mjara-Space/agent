@@ -704,16 +704,16 @@ class Bench(Base):
 
         app_public_path = f"apps/{app}/{app}/public"
         assets_path = f"sites/assets/{app}"
-        result = self.docker_execute(
+        script = (
             "if [ ! -d {app_public_path} ]; then exit 2; fi; "
             "rm -rf {assets_path}; "
             "mkdir -p sites/assets; "
-            "cp -a {app_public_path} {assets_path}".format(
-                app_public_path=shlex.quote(app_public_path),
-                assets_path=shlex.quote(assets_path),
-            ),
-            non_zero_throw=False,
+            "cp -a {app_public_path} {assets_path}"
+        ).format(
+            app_public_path=shlex.quote(app_public_path),
+            assets_path=shlex.quote(assets_path),
         )
+        result = self.docker_execute(f"bash -lc {shlex.quote(script)}", non_zero_throw=False)
         return result.get("returncode") == 0
 
     def get_asset_references(self, app: str, index_html_path: Path):
