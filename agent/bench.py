@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import string
 import tempfile
 import traceback
@@ -630,9 +631,10 @@ class Bench(Base):
         app_public_path = app_root / app / "public"
         config = self.get_bench_assets_config(app_root)
         if not app_public_path.exists():
-            return {"skipped": True, "reason": "no_public_assets", "missing_assets": []}
-
-        self.copy_app_public_assets(app, app_public_path)
+            if not self.copy_container_public_assets(app):
+                return {"skipped": True, "reason": "no_public_assets", "missing_assets": []}
+        else:
+            self.copy_app_public_assets(app, app_public_path)
 
         if not config:
             return {
@@ -695,6 +697,24 @@ class Bench(Base):
 
         assets_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(app_public_path, assets_path, symlinks=True)
+
+    def copy_container_public_assets(self, app: str):
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]*", app):
+            raise AgentException({"ok": False, "message": f"Invalid app name {app}"})
+
+        app_public_path = f"apps/{app}/{app}/public"
+        assets_path = f"sites/assets/{app}"
+        result = self.docker_execute(
+            "if [ ! -d {app_public_path} ]; then exit 2; fi; "
+            "rm -rf {assets_path}; "
+            "mkdir -p sites/assets; "
+            "cp -a {app_public_path} {assets_path}".format(
+                app_public_path=shlex.quote(app_public_path),
+                assets_path=shlex.quote(assets_path),
+            ),
+            non_zero_throw=False,
+        )
+        return result.get("returncode") == 0
 
     def get_asset_references(self, app: str, index_html_path: Path):
         if not index_html_path.exists():

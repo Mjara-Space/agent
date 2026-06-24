@@ -95,6 +95,19 @@ index_html_path = "drive/www/drive.html"
             (self.sites_assets_dir / "drive" / "frontend" / "assets" / "index-new.js").exists()
         )
 
+    def test_sync_generated_app_assets_copies_container_public_assets(self):
+        with patch.object(
+            self.bench,
+            "docker_execute",
+            return_value={"returncode": 0, "status": "Success", "output": ""},
+        ) as docker_execute:
+            result = self.bench.sync_generated_app_assets("drive")
+
+        self.assertFalse(result["skipped"])
+        docker_execute.assert_called_once()
+        self.assertIn("apps/drive/drive/public", docker_execute.call_args.args[0])
+        self.assertIn("sites/assets/drive", docker_execute.call_args.args[0])
+
     def test_sync_generated_app_assets_reports_missing_references(self):
         self._create_drive_app(asset_name="missing.js", include_public_asset=False)
 
