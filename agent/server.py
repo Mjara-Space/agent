@@ -1023,6 +1023,9 @@ class Server(Base):
         directory = os.path.join(self.directory, "repo")
         return {
             "commit": self.execute("git rev-parse HEAD", directory=directory)["output"],
+            "capabilities": [
+                "bench_sync_assets",
+            ],
             "status": self.execute("git status --short", directory=directory)["output"],
             "upstream": self.execute("git remote get-url upstream", directory=directory)["output"],
             "show": self.execute("git show", directory=directory)["output"],
