@@ -32,6 +32,7 @@ from agent.nginx_reload_manager import NginxReloadManager
 from agent.nginx_reload_manager import ReloadStatus as NginxReloadStatus
 from agent.proxy import Proxy
 from agent.proxysql import ProxySQL
+from agent.rag_operations import RAG_OPERATION_NAMES, execute_rag_operation
 from agent.server import Server
 from agent.snapshot_recovery import SnapshotRecovery
 from agent.ssh import SSHProxy
@@ -1982,3 +1983,15 @@ def backup_db():
     offsite = data.get("offsite")
     job = SnapshotRecovery().backup_db(site, database_ip, database_name, mariadb_root_password, offsite)
     return {"job": job}
+@application.route(
+    "/benches/<string:bench>/sites/<string:site>/rag/<string:operation>",
+    methods=["POST"],
+)
+@validate_bench_and_site
+def site_rag_operation(bench: str, site: str, operation: str):
+    if operation not in RAG_OPERATION_NAMES:
+        return {"status": "failed", "reason_code": "unsupported_rag_operation"}, 400
+    payload = request.get_json(silent=True) or {}
+    result = execute_rag_operation(Server().benches[bench].sites[site], operation, payload)
+    return result, 200 if result.get("status") not in {"failed", "unverified"} else 502
+
