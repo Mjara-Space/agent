@@ -34,6 +34,7 @@ from agent.proxy import Proxy
 from agent.proxysql import ProxySQL
 from agent.rag_operations import RAG_OPERATION_NAMES, execute_rag_operation
 from agent.server import Server
+from agent.site_metadata import SITE_METADATA_OPERATION_NAMES, execute_site_metadata_operation
 from agent.snapshot_recovery import SnapshotRecovery
 from agent.ssh import SSHProxy
 from agent.utils import check_installed_pyspy
@@ -1995,3 +1996,13 @@ def site_rag_operation(bench: str, site: str, operation: str):
     result = execute_rag_operation(Server().benches[bench].sites[site], operation, payload)
     return result, 200 if result.get("status") not in {"failed", "unverified"} else 502
 
+@application.route(
+    "/benches/<string:bench>/sites/<string:site>/metadata/<string:operation>",
+    methods=["GET"],
+)
+@validate_bench_and_site
+def site_metadata_operation(bench: str, site: str, operation: str):
+    if operation not in SITE_METADATA_OPERATION_NAMES:
+        return {"status": "failed", "reason_code": "unsupported_site_metadata_operation"}, 400
+    result = execute_site_metadata_operation(Server().benches[bench].sites[site], operation)
+    return result, 200 if result.get("status") == "ok" else 502
