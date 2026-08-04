@@ -2004,5 +2004,6 @@ def site_rag_operation(bench: str, site: str, operation: str):
 def site_metadata_operation(bench: str, site: str, operation: str):
     if operation not in SITE_METADATA_OPERATION_NAMES:
         return {"status": "failed", "reason_code": "unsupported_site_metadata_operation"}, 400
-    result = execute_site_metadata_operation(Server().benches[bench].sites[site], operation)
+    user = request.args.get("user", "").strip() or None
+    result = execute_site_metadata_operation(Server().benches[bench].sites[site], operation, user=user)
     return result, 200 if result.get("status") == "ok" else 502
