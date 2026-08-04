@@ -30,6 +30,7 @@ class TestRAGOperations(unittest.TestCase):
 		self.assertNotIn("python3", command)
 		self.assertIn("payload-token-123", script)
 		self.assertIn('"operation": "verify"', script)
+		self.assertTrue(script.startswith("import json\n"))
 
     def test_unknown_operation_is_rejected_before_execution(self):
         site = Mock()

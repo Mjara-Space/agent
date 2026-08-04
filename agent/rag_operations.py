@@ -54,7 +54,7 @@ elif op == "verify_scope":
     result = {{"status": "verified" if status.verified else "unverified", "reason_code": status.reason}}
 print({_RESULT_MARKER!r} + json.dumps(result, separators=(",", ":")))
 """
-	return f"exec({program!r})"
+	return program
 
 
 def execute_rag_operation(site: Any, operation: str, payload: Mapping[str, Any]) -> dict[str, Any]:
