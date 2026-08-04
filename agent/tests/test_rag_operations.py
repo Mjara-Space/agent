@@ -24,11 +24,12 @@ class TestRAGOperations(unittest.TestCase):
 
         self.assertEqual(result, {"status": "verified"})
         site.bench_execute.assert_called_once()
-        command, payload = site.bench_execute.call_args.args
-        self.assertNotIn("payload-token-123", command)
-        payload = json.loads(payload)
-        self.assertEqual(payload["operation"], "verify")
-        self.assertEqual(payload["service_token"], "payload-token-123")
+		command = site.bench_execute.call_args.args[0]
+		script = site.bench_execute.call_args.kwargs["input"]
+		self.assertEqual(command, "console")
+		self.assertNotIn("python3", command)
+		self.assertIn("payload-token-123", script)
+		self.assertIn('"operation": "verify"', script)
 
     def test_unknown_operation_is_rejected_before_execution(self):
         site = Mock()
