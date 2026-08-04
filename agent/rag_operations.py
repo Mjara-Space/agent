@@ -74,9 +74,10 @@ def execute_rag_operation(site: Any, operation: str, payload: Mapping[str, Any])
         return {"status": "failed", "reason_code": "tenant_command_failed"}
 
     for line in reversed(output.splitlines()):
-        if line.startswith(_RESULT_MARKER):
+        marker_index = line.find(_RESULT_MARKER)
+        if marker_index >= 0:
             try:
-                parsed = json.loads(line[len(_RESULT_MARKER) :])
+                parsed = json.loads(line[marker_index + len(_RESULT_MARKER) :])
             except (TypeError, ValueError):
                 break
             if isinstance(parsed, dict):

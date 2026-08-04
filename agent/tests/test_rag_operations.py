@@ -9,10 +9,10 @@ from agent.rag_operations import RAG_OPERATION_NAMES, execute_rag_operation
 
 class TestRAGOperations(unittest.TestCase):
     def test_supported_operation_executes_fixed_command_with_payload_on_stdin(self):
-        site = Mock()
-        site.bench_execute.return_value = {
-            "status": "success",
-            "output": '__QRIIB_RAG_RESULT__{"status":"verified"}',
+		site = Mock()
+		site.bench_execute.return_value = {
+			"status": "success",
+			"output": '>>> __QRIIB_RAG_RESULT__{"status":"verified"}',
             "returncode": 0,
         }
 
