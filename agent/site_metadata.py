@@ -41,6 +41,7 @@ def execute_site_metadata_operation(site: Any, operation: str, user: str | None 
 		return {"status": "failed", "reason_code": "user_required"}
 
 	script = _build_user_language_script(user.strip()) if operation == "user_language" else _build_language_script()
+	result = site.bench_execute("console", input=script)
 	if str(result.get("status") or "").lower() not in {"success", "succeeded"}:
 		return {"status": "failed", "reason_code": "tenant_command_failed"}
 
