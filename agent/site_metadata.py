@@ -6,16 +6,25 @@ from typing import Any
 
 SITE_METADATA_OPERATION_NAMES = frozenset({"language", "user_language"})
 _RESULT_MARKER = "__QRIIB_SITE_METADATA_RESULT__"
+_LANGUAGE_NORMALIZATION_SCRIPT = """\
+def normalize_language(value):
+    value = str(value or "").strip().lower()
+    parts = value.split("-", 1)
+    if value in {"ar", "en"}:
+        return value
+    if len(parts) == 2 and parts[0] in {"ar", "en"} and parts[1]:
+        return parts[0]
+    return "en"
+"""
 
 
 def _build_language_script() -> str:
 	return f'''import json
 import frappe
 
-value = frappe.db.get_single_value("System Settings", "language")
-value = str(value or "").strip().lower()
-language = "ar" if value.startswith("ar") else "en" if value.startswith("en") else None
-result = {{"status": "ok", "language": language}} if language else {{"status": "failed", "reason_code": "invalid_language"}}
+{_LANGUAGE_NORMALIZATION_SCRIPT}
+language = normalize_language(frappe.db.get_single_value("System Settings", "language"))
+result = {{"status": "ok", "language": language}}
 print({_RESULT_MARKER!r} + json.dumps(result, separators=(",", ":")))
 '''
 
@@ -26,10 +35,9 @@ def _build_user_language_script(user: str) -> str:
 import frappe
 
 user = {user_literal}
-value = frappe.db.get_value("User", user, "language")
-value = str(value or "").strip().lower()
-language = "ar" if value.startswith("ar") else "en" if value.startswith("en") else None
-result = {{"status": "ok", "language": language}} if language else {{"status": "failed", "reason_code": "user_language_unavailable"}}
+{_LANGUAGE_NORMALIZATION_SCRIPT}
+language = normalize_language(frappe.db.get_value("User", user, "language"))
+result = {{"status": "ok", "language": language}}
 print({_RESULT_MARKER!r} + json.dumps(result, separators=(",", ":")))
 '''
 
