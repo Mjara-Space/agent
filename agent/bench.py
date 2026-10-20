@@ -696,13 +696,22 @@ class Bench(Base):
         if os.path.commonpath([assets_root_path, assets_path_path]) != assets_root_path:
             raise AgentException({"ok": False, "message": f"Invalid app assets path for {app}"})
 
-        if assets_path.is_symlink() or assets_path.is_file():
-            assets_path.unlink()
-        elif assets_path.exists():
-            shutil.rmtree(assets_path)
+        assets_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=f".{app}.sync-", dir=assets_root) as staging:
+            staged_assets = Path(staging) / "public"
+            shutil.copytree(app_public_path, staged_assets, symlinks=True)
+            node_modules = app_public_path / "node_modules"
+            if node_modules.is_symlink() and node_modules.is_dir():
+                # Host nginx cannot resolve the container's absolute node_modules link.
+                target = node_modules.resolve()
+                (staged_assets / "node_modules").unlink()
+                shutil.copytree(target, staged_assets / "node_modules", symlinks=True)
 
-        assets_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(app_public_path, assets_path, symlinks=True)
+            if assets_path.is_symlink() or assets_path.is_file():
+                assets_path.unlink()
+            elif assets_path.exists():
+                shutil.rmtree(assets_path)
+            os.replace(staged_assets, assets_path)
 
     def copy_container_public_assets(self, app: str):
         if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]*", app):
@@ -711,16 +720,33 @@ class Bench(Base):
         app_public_path = f"apps/{app}/{app}/public"
         assets_path = f"sites/assets/{app}"
         script = (
-            "if [ ! -d {app_public_path} ]; then exit 2; fi; "
-            "rm -rf {assets_path}; "
+            "set -eu; "
+            "if [ ! -d {app_public_path} ]; then exit 44; fi; "
             "mkdir -p sites/assets; "
-            "cp -a {app_public_path} {assets_path}"
+            "staging=$(mktemp -d {staging_template}); "
+            'trap \'rm -rf "$staging"\' EXIT; '
+            'cp -a {app_public_path} "$staging/public"; '
+            "if [ -L {node_modules} ] && [ -d {node_modules} ]; then "
+            "target=$(readlink -f {node_modules}); "
+            'rm "$staging/public/node_modules"; '
+            'cp -a "$target" "$staging/public/node_modules"; '
+            "fi; "
+            "rm -rf {assets_path}; "
+            'mv "$staging/public" {assets_path}'
         ).format(
             app_public_path=shlex.quote(app_public_path),
             assets_path=shlex.quote(assets_path),
+            staging_template=shlex.quote(f"sites/assets/.{app}.sync-XXXXXX"),
+            node_modules=shlex.quote(f"{app_public_path}/node_modules"),
         )
         result = self.docker_execute(f"bash -lc {shlex.quote(script)}", non_zero_throw=False)
-        return result.get("returncode") == 0
+        if result.get("returncode") == 44:
+            return False
+        if result.get("returncode") != 0:
+            raise AgentException(
+                {**result, "ok": False, "message": f"Failed to copy public assets for {app}"}
+            )
+        return True
 
     def get_asset_references(self, app: str, index_html_path: Path):
         if not index_html_path.exists():
